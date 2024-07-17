@@ -1,15 +1,11 @@
-from fastapi import FastAPI, HTTPException, Request
+import os
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import httpx
-import os
-import logging
+from mangum import Mangum
 
 app = FastAPI()
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
 API_URL = "https://api.anthropic.com/v1/messages"
@@ -32,20 +28,15 @@ async def send_message(prompt: str):
             "messages": [{"role": "user", "content": prompt}]
         }
         
-        try:
-            response = await client.post(API_URL, json=data, headers=headers)
-            response.raise_for_status()
+        response = await client.post(API_URL, json=data, headers=headers)
+        
+        if response.status_code == 200:
             return response.json()["content"][0]["text"]
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error occurred: {e}")
-            raise HTTPException(status_code=e.response.status_code, detail=str(e))
-        except Exception as e:
-            logger.error(f"An unexpected error occurred: {e}")
-            raise HTTPException(status_code=500, detail="Internal server error")
+        else:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    logger.info("Home route accessed")
+async def home():
     return """
     <!DOCTYPE html>
     <html lang="en">
@@ -124,16 +115,13 @@ async def home(request: Request):
                 if (message) {
                     addMessage('You', message);
                     try {
-                        const response = await fetch('/send', {
+                        const response = await fetch('/.netlify/functions/main/send', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                             },
                             body: JSON.stringify({prompt: message}),
                         });
-                        if (!response.ok) {
-                            throw new Error('Network response was not ok');
-                        }
                         const data = await response.json();
                         addMessage('Claude', data.response);
                     } catch (error) {
@@ -165,12 +153,7 @@ async def home(request: Request):
 
 @app.post("/send")
 async def send(prompt: Prompt):
-    logger.info(f"Received prompt: {prompt.prompt}")
     response = await send_message(prompt.prompt)
-    logger.info(f"Sent response: {response[:100]}...")  # Log first 100 chars of response
     return {"response": response}
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+handler = Mangum(app)
